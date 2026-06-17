@@ -75,11 +75,19 @@ def cargar(bts: bytes) -> dict:
     if not pe or not ps:
         st.error("❌ Faltan pestañas 'Base entradas' / 'Base salidas'."); st.stop()
 
-    # ENTRADAS
-    e = pd.read_excel(io.BytesIO(bts), sheet_name=pe, header=4)
+    # 🔍 ESCÁNER DINÁMICO DE ENCABEZADO EN ENTRADAS
+    df_raw_e = pd.read_excel(io.BytesIO(bts), sheet_name=pe, header=None)
+    header_idx_e = 4  # Valor por defecto por si falla el escáner
+    for idx, row in df_raw_e.iterrows():
+        row_str = [str(x).strip().upper().replace("Á","A").replace("É","E").replace("Í","I").replace("Ó","O").replace("Ú","U") for x in row]
+        if "BIOLOGICO" in row_str or "BIOLOGICOS" in row_str or "VACUNA" in row_str:
+            header_idx_e = idx
+            break
+
+    e = pd.read_excel(io.BytesIO(bts), sheet_name=pe, header=header_idx_e)
     e.columns = [str(c).strip() for c in e.columns]
     
-    # 🛡️ NORMALIZACIÓN DE COLUMNAS EN ENTRADAS (Previene fallos por acentos o formatos)
+    # 🛡️ NORMALIZACIÓN DE COLUMNAS EN ENTRADAS (Acentos y formatos)
     mapa_columnas_e = {}
     for col in e.columns:
         c_upper = col.upper().replace("Á","A").replace("É","E").replace("Í","I").replace("Ó","O").replace("Ú","U")
@@ -96,11 +104,9 @@ def cargar(bts: bytes) -> dict:
             
     e = e.rename(columns=mapa_columnas_e)
     
-    # Diagnóstico en pantalla si la columna crítica no existe en el Excel
     if "BIOLOGICO" not in e.columns:
         st.error(f"❌ No se detectó la columna del Biológico en la pestaña '{pe}'. "
-                 f"Verifica que tu columna se llame 'BIOLÓGICO' o 'BIOLOGICO'.\n\n"
-                 f"Columnas reales leídas en tu archivo: {list(e.columns)}")
+                 f"Columnas leídas en la fila detectada ({header_idx_e+1}): {list(e.columns)}")
         st.stop()
 
     if "FECHA DE RECEPCIÓN" not in e.columns: e["FECHA DE RECEPCIÓN"] = pd.NaT
@@ -120,8 +126,16 @@ def cargar(bts: bytes) -> dict:
     e["PRESENTAQCION"]      = e.get("PRESENTAQCION", e.get("PRESENTACION",
                               pd.Series(dtype=str))).fillna("").astype(str).str.strip()
 
-    # SALIDAS (formato largo)
-    s = pd.read_excel(io.BytesIO(bts), sheet_name=ps, header=0)
+    # 🔍 ESCÁNER DINÁMICO DE ENCABEZADO EN SALIDAS
+    df_raw_s = pd.read_excel(io.BytesIO(bts), sheet_name=ps, header=None)
+    header_idx_s = 0
+    for idx, row in df_raw_s.iterrows():
+        row_str = [str(x).strip().upper().replace("Á","A").replace("É","E").replace("Í","I").replace("Ó","O").replace("Ú","U") for x in row]
+        if "VACUNA" in row_str or "BIOLOGICO" in row_str or "CANTIDAD" in row_str:
+            header_idx_s = idx
+            break
+
+    s = pd.read_excel(io.BytesIO(bts), sheet_name=ps, header=header_idx_s)
     s.columns = [str(c).strip() for c in s.columns]
     
     # 🛡️ NORMALIZACIÓN DE COLUMNAS EN SALIDAS
@@ -137,8 +151,7 @@ def cargar(bts: bytes) -> dict:
     s = s.rename(columns=mapa_columnas_s)
 
     if "VACUNA" not in s.columns:
-        st.error(f"❌ No se encontró la columna de la vacuna/biológico en la pestaña '{ps}'. "
-                 f"Columnas detectadas en salidas: {list(s.columns)}")
+        st.error(f"❌ No se encontró la columna de la vacuna/biológico en la pestaña '{ps}'.")
         st.stop()
 
     s = s.dropna(subset=["VACUNA"]).copy()
