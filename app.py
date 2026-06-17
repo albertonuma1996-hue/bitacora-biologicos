@@ -75,19 +75,37 @@ def cargar(bts: bytes) -> dict:
     if not pe or not ps:
         st.error("❌ Faltan pestañas 'Base entradas' / 'Base salidas'."); st.stop()
 
-# ENTRADAS
+    # ENTRADAS
     e = pd.read_excel(io.BytesIO(bts), sheet_name=pe, header=4)
     e.columns = [str(c).strip() for c in e.columns]
     
-    # 🛡️ FILTRO DE SEGURIDAD: Normaliza nombres por si varían los acentos en el Excel
-    mapeo_columnas = {}
+    # 🛡️ NORMALIZACIÓN DE COLUMNAS EN ENTRADAS (Previene fallos por acentos o formatos)
+    mapa_columnas_e = {}
     for col in e.columns:
-        norm = col.strip().upper().replace("Á","A").replace("É","E").replace("Í","I").replace("Ó","O").replace("Ú","U")
-        if norm == "BIOLOGICO": mapeo_columnas[col] = "BIOLOGICO"
-        elif norm == "FECHA DE RECEPCION": mapeo_columnas[col] = "FECHA DE RECEPCIÓN"
-        elif norm == "FECHA DE CADUCIDAD": mapeo_columnas[col] = "FECHA DE CADUCIDAD"
-    if mapeo_columnas:
-        e = e.rename(columns=mapeo_columnas)
+        c_upper = col.upper().replace("Á","A").replace("É","E").replace("Í","I").replace("Ó","O").replace("Ú","U")
+        c_clean = c_upper.replace(".","").strip()
+        
+        if c_clean in ["BIOLOGICO", "BIOLOGICOS", "VACUNA"]:
+            mapa_columnas_e[col] = "BIOLOGICO"
+        elif c_clean in ["FECHA DE RECEPCION", "FECHA RECEPCION", "FECHA DE RECEPCIÓN"]:
+            mapa_columnas_e[col] = "FECHA DE RECEPCIÓN"
+        elif c_clean in ["FECHA DE CADUCIDAD", "FECHA CADUCIDAD", "CADUCIDAD"]:
+            mapa_columnas_e[col] = "FECHA DE CADUCIDAD"
+        elif c_clean in ["NO DE LOTE", "NUMERO DE LOTE", "NÚMERO DE LOTE", "LOTE"]:
+            mapa_columnas_e[col] = "NO. DE LOTE."
+            
+    e = e.rename(columns=mapa_columnas_e)
+    
+    # Diagnóstico en pantalla si la columna crítica no existe en el Excel
+    if "BIOLOGICO" not in e.columns:
+        st.error(f"❌ No se detectó la columna del Biológico en la pestaña '{pe}'. "
+                 f"Verifica que tu columna se llame 'BIOLÓGICO' o 'BIOLOGICO'.\n\n"
+                 f"Columnas reales leídas en tu archivo: {list(e.columns)}")
+        st.stop()
+
+    if "FECHA DE RECEPCIÓN" not in e.columns: e["FECHA DE RECEPCIÓN"] = pd.NaT
+    if "FECHA DE CADUCIDAD" not in e.columns: e["FECHA DE CADUCIDAD"] = pd.NaT
+    if "NO. DE LOTE." not in e.columns: e["NO. DE LOTE."] = "SIN LOTE"
 
     e = e.dropna(subset=["BIOLOGICO"]).copy()
     e["BIOLOGICO"]          = e["BIOLOGICO"].astype(str).str.strip()
@@ -105,7 +123,27 @@ def cargar(bts: bytes) -> dict:
     # SALIDAS (formato largo)
     s = pd.read_excel(io.BytesIO(bts), sheet_name=ps, header=0)
     s.columns = [str(c).strip() for c in s.columns]
+    
+    # 🛡️ NORMALIZACIÓN DE COLUMNAS EN SALIDAS
+    mapa_columnas_s = {}
+    for col in s.columns:
+        c_upper = col.upper().replace("Á","A").replace("É","E").replace("Í","I").replace("Ó","O").replace("Ú","U")
+        if c_upper in ["VACUNA", "BIOLOGICO", "BIOLÓGICO"]:
+            mapa_columnas_s[col] = "VACUNA"
+        elif c_upper in ["FECHA DE SALIDA", "FECHA SALIDA"]:
+            mapa_columnas_s[col] = "FECHA DE SALIDA"
+        elif c_upper in ["CANTIDAD", "DOSIS"]:
+            mapa_columnas_s[col] = "CANTIDAD"
+    s = s.rename(columns=mapa_columnas_s)
+
+    if "VACUNA" not in s.columns:
+        st.error(f"❌ No se encontró la columna de la vacuna/biológico en la pestaña '{ps}'. "
+                 f"Columnas detectadas en salidas: {list(s.columns)}")
+        st.stop()
+
     s = s.dropna(subset=["VACUNA"]).copy()
+    if "FECHA DE SALIDA" not in s.columns: s["FECHA DE SALIDA"] = pd.NaT
+    if "CANTIDAD" not in s.columns: s["CANTIDAD"] = 0
     s["FECHA DE SALIDA"] = pd.to_datetime(s["FECHA DE SALIDA"], errors="coerce")
     s["CANTIDAD"]        = pd.to_numeric(s["CANTIDAD"], errors="coerce").fillna(0)
     s["VACUNA"]          = s["VACUNA"].astype(str).str.strip()
