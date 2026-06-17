@@ -121,6 +121,11 @@ def cargar(bts: bytes) -> dict:
     e["NUMERO DE DOSIS"]    = pd.to_numeric(e.get("NUMERO DE DOSIS",  0), errors="coerce").fillna(0)
     e["NUMERO DE DOSIS2"]   = pd.to_numeric(e.get("NUMERO DE DOSIS2", 0), errors="coerce").fillna(0)
     e["NUMERO DE FRASCOS"]  = pd.to_numeric(e.get("NUMERO DE FRASCOS",0), errors="coerce").fillna(0)
+    # ── Columnas para unidades secundarias (San Fernando Unidad y Palo Solo) ──
+    e["FRASCOS2"]           = pd.to_numeric(e.get("FRASCOS2", 0),  errors="coerce").fillna(0)
+    e["FRASCOS4"]           = pd.to_numeric(e.get("FRASCOS4", 0),  errors="coerce").fillna(0)
+    e["FECHA DE RECEPCIÓN2"]  = pd.to_datetime(e.get("FECHA DE RECEPCIÓN2",  pd.NaT), errors="coerce")
+    e["FECHA DE RECEPCIÓN22"] = pd.to_datetime(e.get("FECHA DE RECEPCIÓN22", pd.NaT), errors="coerce")
     e["TEMP. °C"]           = e.get("TEMP. °C", pd.Series(dtype=str)).fillna("").astype(str)
     e["PROCEDENCIA"]        = e.get("PROCEDENCIA", pd.Series(dtype=str)).fillna("").astype(str).str.strip()
     e["PRESENTAQCION"]      = e.get("PRESENTAQCION", e.get("PRESENTACION",
@@ -179,24 +184,38 @@ def _bio_en_salidas(bio: str, vacunas_s) -> str:
     candidatos = [v for v in vacunas_s if bio.upper() in v.upper()]
     return candidatos[0] if candidatos else bio
 
-def bitacora_bio(datos, bio, f_ini, f_fin):
+def bitacora_bio(datos, bio, f_ini, f_fin, unidad_key="coord"):
     e = datos["e"]; s = datos["s"]
     vacunas_s = s["VACUNA"].unique()
     bio_s = _bio_en_salidas(bio, vacunas_s)
     ts_ini = pd.Timestamp(f_ini); ts_fin = pd.Timestamp(f_fin)
 
-    e_ant = e[(e["BIOLOGICO"]==bio) & (e["FECHA DE RECEPCIÓN"]<ts_ini)]
+    # ── Seleccionar columna de frascos y fecha según unidad ──────────────────
+    if unidad_key == "sf_unidad":
+        col_frascos  = "FRASCOS2"
+        col_fecha_e  = "FECHA DE RECEPCIÓN2"
+        etiq_destino = "San Fernando Unidad"
+    elif unidad_key == "palo_solo":
+        col_frascos  = "FRASCOS4"
+        col_fecha_e  = "FECHA DE RECEPCIÓN22"
+        etiq_destino = "Palo Solo"
+    else:  # coord (Coordinación San Fernando) – columnas originales
+        col_frascos  = "NUMERO DE FRASCOS"
+        col_fecha_e  = "FECHA DE RECEPCIÓN"
+        etiq_destino = "Coord. San Fernando"
+
+    e_ant = e[(e["BIOLOGICO"]==bio) & (e[col_fecha_e]<ts_ini)]
     s_ant = s[(s["VACUNA"]==bio_s) & (s["FECHA DE SALIDA"]<ts_ini)]
-    saldo_hist = max(0, int(e_ant["NUMERO DE DOSIS2"].sum()) - int(s_ant["CANTIDAD"].sum()))
+    saldo_hist = max(0, int(e_ant[col_frascos].sum()) - int(s_ant["CANTIDAD"].sum()))
 
     ent = e[(e["BIOLOGICO"]==bio) &
-            (e["FECHA DE RECEPCIÓN"]>=ts_ini) &
-            (e["FECHA DE RECEPCIÓN"]<=ts_fin)].sort_values("FECHA DE RECEPCIÓN")
+            (e[col_fecha_e]>=ts_ini) &
+            (e[col_fecha_e]<=ts_fin)].sort_values(col_fecha_e)
     sal = s[(s["VACUNA"]==bio_s) &
             (s["FECHA DE SALIDA"]>=ts_ini) &
             (s["FECHA DE SALIDA"]<=ts_fin)].sort_values("FECHA DE SALIDA")
 
-    ev = ([("E", r["FECHA DE RECEPCIÓN"], r) for _, r in ent.iterrows()] +
+    ev = ([("E", r[col_fecha_e], r) for _, r in ent.iterrows()] +
           [("S", r["FECHA DE SALIDA"],    r) for _, r in sal.iterrows()])
     ev.sort(key=lambda x: x[1] if pd.notna(x[1]) else pd.Timestamp("2099-01-01"))
 
@@ -205,17 +224,17 @@ def bitacora_bio(datos, bio, f_ini, f_fin):
               "dosis_u":0,"temp_e":"","lote_e":"","cad_e":None,
               "frascos_e":0,"dosis_e":0,
               "fecha_s":None,"destino":"◀ Saldo inicial del período",
-              "cantidad":0,"resp":""}]
+              "cantidad":0,"resp":"","firma":""}]
     saldo = saldo_hist
     for tipo, fecha, r in ev:
         if tipo == "E":
-            d = int(r["NUMERO DE DOSIS2"]); saldo += d
-            filas.append({"tipo":"E","fecha_e":r["FECHA DE RECEPCIÓN"],
+            d = int(r[col_frascos]); saldo += d
+            filas.append({"tipo":"E","fecha_e":r[col_fecha_e],
                 "procedencia":r["PROCEDENCIA"],"presentacion":r["PRESENTAQCION"],
                 "dosis_u":int(r["NUMERO DE DOSIS"]),"temp_e":r["TEMP. °C"],
                 "lote_e":r["NO. DE LOTE."],"cad_e":r["FECHA DE CADUCIDAD"],
-                "frascos_e":int(r["NUMERO DE FRASCOS"]),"dosis_e":d,"saldo":saldo,
-                "fecha_s":None,"destino":"","cantidad":0,"resp":""})
+                "frascos_e":d,"dosis_e":d,"saldo":saldo,
+                "fecha_s":None,"destino":etiq_destino,"cantidad":0,"resp":"","firma":""})
         else:
             d = int(r["CANTIDAD"]); saldo = max(0, saldo-d)
             filas.append({"tipo":"S","saldo":saldo,
@@ -223,7 +242,7 @@ def bitacora_bio(datos, bio, f_ini, f_fin):
                 "dosis_u":0,"temp_e":"","lote_e":"","cad_e":None,
                 "frascos_e":0,"dosis_e":0,
                 "fecha_s":r["FECHA DE SALIDA"],"destino":r["DESTINO"],
-                "cantidad":d,"resp":r["RESPONSABLE"]})
+                "cantidad":d,"resp":r["RESPONSABLE"],"firma":""})
     return filas
 
 def _fmt(v):
@@ -342,6 +361,25 @@ with st.sidebar:
     st.divider()
     archivo = st.file_uploader("📂 Cargar libro Excel (.xlsx)", type=["xlsx"])
     st.divider()
+    # ── Selector de Unidad / Ruta de entrada ──────────────────
+    st.markdown("### 🏥 Unidad / Ruta")
+    unidad_sel = st.radio(
+        "Seleccionar unidad:",
+        [
+            "📦 Coordinación San Fernando",
+            "🏥 San Fernando Unidad",
+            "🌳 Palo Solo",
+        ],
+        key="unidad_radio",
+    )
+    # Mapear etiquetas a claves internas
+    UNIDAD_MAP = {
+        "📦 Coordinación San Fernando": "coord",
+        "🏥 San Fernando Unidad":       "sf_unidad",
+        "🌳 Palo Solo":                  "palo_solo",
+    }
+    unidad_key = UNIDAD_MAP[unidad_sel]
+    st.divider()
     modulo = st.radio("Módulo:", [
         "📋 Bitácora General",
         "📄 Anexo A",
@@ -353,7 +391,7 @@ with st.sidebar:
 
 st.markdown("""
 <div class="hdr">
-  <h1>💉 Bitácora de Control de Biológicos V6</h1>
+  <h1>💉 Bitácora de Control de Biológicos V7</h1>
   <p>Jurisdicción / Distrito 06 Xonacatlán · CESAEM · Programa de Vacunación Universal</p>
 </div>""", unsafe_allow_html=True)
 
@@ -375,6 +413,18 @@ biologicos= datos["biologicos"]
 if "Bitácora" in modulo:
     st.subheader("📋 Bitácora General – Doble entrada con arrastre")
 
+    # Banner de unidad activa
+    UNIDAD_LABELS = {
+        "coord":     ("📦 Coordinación San Fernando", "#1a5276", "NUMERO DE FRASCOS",     "FECHA DE RECEPCIÓN"),
+        "sf_unidad": ("🏥 San Fernando Unidad",        "#1e8449", "FRASCOS2",              "FECHA DE RECEPCIÓN2"),
+        "palo_solo": ("🌳 Palo Solo",                  "#7d6608", "FRASCOS4",              "FECHA DE RECEPCIÓN22"),
+    }
+    etiq_u, color_u, col_frascos_u, col_fecha_u = UNIDAD_LABELS[unidad_key]
+    st.markdown(
+        f'<div style="background:{color_u};color:white;padding:8px 14px;'
+        f'border-radius:8px;font-weight:700;margin-bottom:10px">'
+        f'Unidad activa: {etiq_u}</div>', unsafe_allow_html=True)
+
     ca, cb = st.columns([3,2])
     with ca:
         bios_sel = st.multiselect("🔬 Biológico",biologicos,
@@ -385,9 +435,55 @@ if "Bitácora" in modulo:
     if not bios_sel:
         st.warning("Selecciona al menos un biológico."); st.stop()
 
-    filas_por_bio = {bio: bitacora_bio(datos,bio,f_ini,f_fin) for bio in bios_sel}
+    filas_por_bio = {bio: bitacora_bio(datos,bio,f_ini,f_fin,unidad_key) for bio in bios_sel}
 
-    st.caption("🟣 Violeta=saldo anterior │ 🔵 Azul=entrada │ ⬜ Blanco=salida │ 🟣 SALDO=remanente")
+    # Encabezados exactos solicitados (doble fila: ENTRADA + SALIDA)
+    # ─────────────────────────────────────────────────────────────
+    # ENTRADA cols (9): FECHA DE RECEPCIÓN | PROCEDENCIA | BIOLOGICO | PRESENTAQCION |
+    #                   NUMERO DE DOSIS(u) | TEMP. °C | NO. DE LOTE. | FECHA DE CADUCIDAD |
+    #                   NUMERO DE FRASCOS | NUMERO DE DOSIS
+    # SALDO (1): SALDO
+    # SALIDA cols (11): BIOLOGICO | FECHA DE SALIDA | DESTINO | NUMERO DE FRASCOS |
+    #                   NUMERO DE DOSIS | TEMP | NO. DE LOTE. | FECHA DE CADUCIDAD |
+    #                   DOSIS APLICADAS | DOSIS DESPERDICIADAS | RESPONSABLE | FIRMA
+
+    COLS_E = [
+        ("FECHA DE RECEPCIÓN","c"), ("PROCEDENCIA","l"), ("BIOLOGICO","l"),
+        ("PRESENTAQCION","l"), ("NUMERO DE DOSIS","r"), ("TEMP. °C","c"),
+        ("NO. DE LOTE.","c"), ("FECHA DE CADUCIDAD","c"),
+        ("NUMERO DE FRASCOS","r"), ("NUMERO DE DOSIS","r"),
+    ]
+    COL_SALDO = ("SALDO","r")
+    COLS_S = [
+        ("BIOLOGICO","l"), ("FECHA DE SALIDA","c"), ("DESTINO","l"),
+        ("NUMERO DE FRASCOS","r"), ("NUMERO DE DOSIS","r"),
+        ("TEMP","c"), ("NO. DE LOTE.","c"), ("FECHA DE CADUCIDAD","c"),
+        ("DOSIS APLICADAS","r"), ("DOSIS DESPERDICIADAS","r"),
+        ("RESPONSABLE","l"), ("FIRMA","c"),
+    ]
+    ALL_COLS = COLS_E + [COL_SALDO] + COLS_S
+    N_E   = len(COLS_E)
+    I_SAL = N_E          # índice de SALDO
+    N_ALL = len(ALL_COLS)
+
+    TH_BASE = "padding:5px 6px;border:1px solid #aaa;font-size:10.5px;white-space:nowrap;color:white"
+    def th_color(i):
+        if i < N_E:   return "#2874a6"   # azul entrada
+        if i == N_E:  return "#7d3c98"   # violeta saldo
+        return "#1e8449"                  # verde salida
+
+    ths = "".join(
+        f'<th style="{TH_BASE};background:{th_color(i)}">{h}</th>'
+        for i,(h,_) in enumerate(ALL_COLS))
+
+    # Cabecera de grupo (fila superior)
+    grupo_hdr = (
+        f'<th colspan="{N_E}" style="{TH_BASE};background:#1a5276;text-align:center;font-size:12px">'
+        f'◀ ENTRADA ▶</th>'
+        f'<th style="{TH_BASE};background:#7d3c98;text-align:center">⚖</th>'
+        f'<th colspan="{len(COLS_S)}" style="{TH_BASE};background:#145a32;text-align:center;font-size:12px">'
+        f'◀ SALIDA ▶</th>'
+    )
 
     tabs = st.tabs([f"💉 {b}" for b in bios_sel])
     for tab, bio in zip(tabs, bios_sel):
@@ -400,18 +496,11 @@ if "Bitácora" in modulo:
             d_sal = sum(f["cantidad"] for f in filas if f["tipo"]=="S")
             m1,m2,m3,m4,m5 = st.columns(5)
             m1.metric("🟣 Saldo inicial", f"{s_ini:,}")
-            m2.metric("📥 Entradas", n_e, f"+{d_ent:,}")
-            m3.metric("📤 Salidas",  n_s, f"-{d_sal:,}")
+            m2.metric("📥 Entradas",  n_e, f"+{d_ent:,}")
+            m3.metric("📤 Salidas",   n_s, f"-{d_sal:,}")
             m4.metric("⚖️ Saldo final", f"{s_fin:,}")
-            m5.metric("📅 Eventos", n_e+n_s)
+            m5.metric("📅 Eventos",   n_e+n_s)
 
-            COLS=[("F.Recepción","c"),("Procedencia","l"),("Present.","l"),
-                  ("Dos/U","r"),("°C","c"),("Lote","c"),("Caducidad","c"),
-                  ("Frascos","r"),("Dosis Rec.","r"),("⚖ SALDO","r"),
-                  ("F.Salida","c"),("Destino","l"),("Cantidad","r"),("Responsable","l")]
-            TH="padding:5px 6px;border:1px solid #aaa;font-size:11px;white-space:nowrap;color:white"
-            ths="".join(f'<th style="{TH};background:{"#7d3c98" if i==9 else "#1a5276"}">{h}</th>'
-                        for i,(h,_) in enumerate(COLS))
             rows=""; mes_a=None
             for f in filas:
                 fe=f["fecha_e"]; fs=f["fecha_s"]
@@ -420,29 +509,63 @@ if "Bitácora" in modulo:
                     ts=pd.Timestamp(ref); mk=(ts.year,ts.month)
                     if mk!=mes_a:
                         mes_a=mk
-                        rows+=(f'<tr><td colspan="14" style="background:#ecf0f1;font-size:11px;'
+                        rows+=(f'<tr><td colspan="{N_ALL}" style="background:#ecf0f1;font-size:11px;'
                                f'font-weight:600;color:#444;padding:4px 8px;border-top:2px solid #bdc3c7">'
                                f'▸ {MESES_LARGO.get(mk[1],"")} {mk[0]}</td></tr>')
-                bg=("#f0e6ff" if f["tipo"]=="A" else "#eaf4fb" if f["tipo"]=="E" else "#fff")
-                cells=[_fmt(f["fecha_e"]),f["procedencia"],f["presentacion"],
-                       str(int(f["dosis_u"])) if f["dosis_u"] else "",
-                       f["temp_e"],f["lote_e"],_fmt(f["cad_e"]),
-                       str(int(f["frascos_e"])) if f["frascos_e"] else "",
-                       str(int(f["dosis_e"])) if f["dosis_e"] else "",
-                       f'{int(f["saldo"]):,}',
-                       _fmt(f["fecha_s"]),f["destino"],
-                       str(int(f["cantidad"])) if f["cantidad"] else "",f["resp"]]
+
+                # Colorear fila
+                bg=("#f0e6ff" if f["tipo"]=="A" else "#eaf4fb" if f["tipo"]=="E" else "#f9fbe7")
+
+                # Construir celdas en el mismo orden que ALL_COLS
+                cells_e = [
+                    _fmt(f["fecha_e"]),                                     # FECHA DE RECEPCIÓN
+                    f["procedencia"],                                        # PROCEDENCIA
+                    bio,                                                     # BIOLOGICO
+                    f["presentacion"],                                       # PRESENTAQCION
+                    str(int(f["dosis_u"])) if f["dosis_u"] else "",          # NUMERO DE DOSIS (u frasco)
+                    f["temp_e"],                                             # TEMP. °C
+                    f["lote_e"],                                             # NO. DE LOTE.
+                    _fmt(f["cad_e"]),                                        # FECHA DE CADUCIDAD
+                    str(int(f["frascos_e"])) if f["frascos_e"] else "",      # NUMERO DE FRASCOS
+                    str(int(f["dosis_e"]))   if f["dosis_e"]   else "",      # NUMERO DE DOSIS
+                ]
+                cell_saldo = f'{int(f["saldo"]):,}'
+                cells_s = [
+                    bio if f["tipo"]=="S" else "",                           # BIOLOGICO
+                    _fmt(f["fecha_s"]),                                      # FECHA DE SALIDA
+                    f["destino"],                                            # DESTINO
+                    str(int(f["cantidad"])) if f["cantidad"] else "",        # NUMERO DE FRASCOS
+                    str(int(f["cantidad"])) if f["cantidad"] else "",        # NUMERO DE DOSIS
+                    "",                                                      # TEMP (salidas)
+                    "",                                                      # NO. DE LOTE. (salida)
+                    "",                                                      # FECHA DE CADUCIDAD (salida)
+                    "",                                                      # DOSIS APLICADAS
+                    "",                                                      # DOSIS DESPERDICIADAS
+                    f["resp"],                                               # RESPONSABLE
+                    f["firma"],                                              # FIRMA
+                ]
+                all_cells = cells_e + [cell_saldo] + cells_s
+
                 tds=""
-                for j,(cell,(_,al)) in enumerate(zip(cells,COLS)):
+                for j,(cell,(_,al)) in enumerate(zip(all_cells, ALL_COLS)):
                     al2={"r":"right","c":"center","l":"left"}.get(al,"left")
-                    ex=("background:#7d3c98;color:white;font-weight:700;" if j==9
-                        else f"background:{bg};")
+                    if j == I_SAL:
+                        ex="background:#7d3c98;color:white;font-weight:700;"
+                    elif j < N_E:
+                        ex=f"background:{bg};"
+                    else:
+                        ex=f"background:{'#f0fff4' if f['tipo']=='S' else bg};"
                     tds+=(f'<td style="{ex}text-align:{al2};padding:4px 6px;'
                           f'border:1px solid #ddd;font-size:11px;white-space:nowrap">{cell}</td>')
                 rows+=f"<tr>{tds}</tr>"
+
             st.markdown(
-                f'<div style="overflow-x:auto"><table style="border-collapse:collapse;'
-                f'min-width:900px;width:100%"><thead><tr>{ths}</tr></thead>'
+                f'<div style="overflow-x:auto">'
+                f'<table style="border-collapse:collapse;min-width:1200px;width:100%">'
+                f'<thead>'
+                f'<tr>{grupo_hdr}</tr>'
+                f'<tr>{ths}</tr>'
+                f'</thead>'
                 f'<tbody>{rows}</tbody></table></div>', unsafe_allow_html=True)
 
     st.divider()
@@ -451,12 +574,31 @@ if "Bitácora" in modulo:
         recs=[]
         for bio,filas in filas_por_bio.items():
             for f in filas:
-                recs.append({"Biológico":bio,
-                    "Tipo":"SALDO ANT." if f["tipo"]=="A" else "ENTRADA" if f["tipo"]=="E" else "SALIDA",
-                    "F.Recepción":_fmt(f["fecha_e"]),"Lote":f["lote_e"],
-                    "Dosis Rec.":f["dosis_e"] or "","SALDO":int(f["saldo"]),
-                    "F.Salida":_fmt(f["fecha_s"]),"Destino":f["destino"],
-                    "Cantidad":f["cantidad"] or "","Responsable":f["resp"]})
+                recs.append({
+                    "FECHA DE RECEPCIÓN":   _fmt(f["fecha_e"]),
+                    "PROCEDENCIA":          f["procedencia"],
+                    "BIOLOGICO":            bio,
+                    "PRESENTAQCION":        f["presentacion"],
+                    "NUMERO DE DOSIS(U)":   int(f["dosis_u"]) if f["dosis_u"] else "",
+                    "TEMP. °C":             f["temp_e"],
+                    "NO. DE LOTE.":         f["lote_e"],
+                    "FECHA DE CADUCIDAD":   _fmt(f["cad_e"]),
+                    "NUMERO DE FRASCOS(E)": int(f["frascos_e"]) if f["frascos_e"] else "",
+                    "NUMERO DE DOSIS(E)":   int(f["dosis_e"])   if f["dosis_e"]   else "",
+                    "SALDO":                int(f["saldo"]),
+                    "BIOLOGICO(S)":         bio if f["tipo"]=="S" else "",
+                    "FECHA DE SALIDA":      _fmt(f["fecha_s"]),
+                    "DESTINO":              f["destino"],
+                    "NUMERO DE FRASCOS(S)": int(f["cantidad"]) if f["tipo"]=="S" and f["cantidad"] else "",
+                    "NUMERO DE DOSIS(S)":   int(f["cantidad"]) if f["tipo"]=="S" and f["cantidad"] else "",
+                    "TEMP(S)":              "",
+                    "NO. DE LOTE.(S)":      "",
+                    "FECHA DE CADUCIDAD(S)":"",
+                    "DOSIS APLICADAS":      "",
+                    "DOSIS DESPERDICIADAS": "",
+                    "RESPONSABLE":          f["resp"],
+                    "FIRMA":                f["firma"],
+                })
         st.download_button("⬇️ Descargar Excel", to_excel(pd.DataFrame(recs),"Bitácora"),
             f"bitacora_{etiq}.xlsx",
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
@@ -510,7 +652,7 @@ elif "Anexo" in modulo:
                           (df_e["FECHA DE RECEPCIÓN"]<pd.Timestamp(f_ini_a))]
     s_antes_total = df_s[(df_s["VACUNA"]==bio_s) &
                           (df_s["FECHA DE SALIDA"]<pd.Timestamp(f_ini_a))]
-    saldo_inicio  = max(0, int(e_antes_total["NUMERO DE DOSIS2"].sum()) -
+    saldo_inicio  = max(0, int(e_antes_total["NUMERO DE FRASCOS"].sum()) -
                            int(s_antes_total["CANTIDAD"].sum()))
 
     # Total salidas en el período (para columna "Salidas")
@@ -525,7 +667,7 @@ elif "Anexo" in modulo:
     saldo = saldo_inicio
     filas_anexo = []
     for n, (_, r) in enumerate(e_filtrado.iterrows(), 1):
-        d = int(r["NUMERO DE DOSIS2"])
+        d = int(r["NUMERO DE FRASCOS"])
         saldo += d
         filas_anexo.append({
             "N.":            n,
@@ -606,7 +748,7 @@ elif "Dashboard" in modulo:
     e_d = df_e[(df_e["FECHA DE RECEPCIÓN"]>=ts_i)&(df_e["FECHA DE RECEPCIÓN"]<=ts_f)]
     s_d = df_s[(df_s["FECHA DE SALIDA"]>=ts_i)   &(df_s["FECHA DE SALIDA"]<=ts_f)]
 
-    total_rec  = int(e_d["NUMERO DE DOSIS2"].sum())
+    total_rec  = int(e_d["NUMERO DE FRASCOS"].sum())
     total_dist = int(s_d["CANTIDAD"].sum())
     n_bio_rec  = e_d["BIOLOGICO"].nunique()
     n_dest     = s_d["DESTINO"].nunique()
@@ -614,7 +756,7 @@ elif "Dashboard" in modulo:
 
     st.markdown(f"**Período: {etiq_d}**")
     k1,k2,k3,k4,k5 = st.columns(5)
-    k1.metric("💉 Dosis Recibidas",    f"{total_rec:,}")
+    k1.metric("💉 Frascos Recibidos",    f"{total_rec:,}")
     k2.metric("✅ Dosis Distribuidas", f"{total_dist:,}")
     k3.metric("📈 Eficiencia",          f"{efic}%")
     k4.metric("🔬 Biológicos",         n_bio_rec)
@@ -625,9 +767,9 @@ elif "Dashboard" in modulo:
                                        "🏥 Por destino","📅 Tendencia mensual"])
 
     with tab1:
-        por_bio_e = (e_d.groupby("BIOLOGICO")["NUMERO DE DOSIS2"]
+        por_bio_e = (e_d.groupby("BIOLOGICO")["NUMERO DE FRASCOS"]
                        .sum().sort_values(ascending=False).reset_index())
-        por_bio_e.columns = ["Biológico","Dosis Recibidas"]
+        por_bio_e.columns = ["Biológico","Frascos Recibidos"]
         st.dataframe(por_bio_e, use_container_width=True, hide_index=True)
         st.bar_chart(por_bio_e.set_index("Biológico"))
 
@@ -654,8 +796,8 @@ elif "Dashboard" in modulo:
         st.line_chart(tend.set_index("Mes"))
         e_d2=e_d.copy()
         e_d2["Mes"]=e_d2["FECHA DE RECEPCIÓN"].dt.to_period("M").astype(str)
-        tend_e=e_d2.groupby("Mes")["NUMERO DE DOSIS2"].sum().reset_index()
-        tend_e.columns=["Mes","Dosis Recibidas"]
+        tend_e=e_d2.groupby("Mes")["NUMERO DE FRASCOS"].sum().reset_index()
+        tend_e.columns=["Mes","Frascos Recibidos"]
         st.caption("Recibidas por mes")
         st.bar_chart(tend_e.set_index("Mes"))
 
@@ -781,7 +923,7 @@ elif "Inventario" in modulo:
     hoy=pd.Timestamp(date.today())
     filas_inv=[]
     for bio in biologicos:
-        fb=bitacora_bio(datos,bio,date(2000,1,1),date(2099,12,31))
+        fb=bitacora_bio(datos,bio,date(2000,1,1),date(2099,12,31),unidad_key)
         s_fin=fb[-1]["saldo"] if fb else 0
         for f in [x for x in fb if x["tipo"]=="E"]:
             cad=f["cad_e"]
@@ -838,5 +980,5 @@ elif "PDF" in modulo:
             "application/pdf" if WEASYPRINT_OK else "text/html")
 
 st.divider()
-st.markdown(f"<small>Bitácora V6 · Jurisdicción 06 Xonacatlán · "
+st.markdown(f"<small>Bitácora V7 · Jurisdicción 06 Xonacatlán · "
             f"{date.today().strftime('%d/%m/%Y')}</small>",unsafe_allow_html=True)
