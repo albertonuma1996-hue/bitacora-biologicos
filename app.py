@@ -75,9 +75,20 @@ def cargar(bts: bytes) -> dict:
     if not pe or not ps:
         st.error("❌ Faltan pestañas 'Base entradas' / 'Base salidas'."); st.stop()
 
-    # ENTRADAS
+# ENTRADAS
     e = pd.read_excel(io.BytesIO(bts), sheet_name=pe, header=4)
     e.columns = [str(c).strip() for c in e.columns]
+    
+    # 🛡️ FILTRO DE SEGURIDAD: Normaliza nombres por si varían los acentos en el Excel
+    mapeo_columnas = {}
+    for col in e.columns:
+        norm = col.strip().upper().replace("Á","A").replace("É","E").replace("Í","I").replace("Ó","O").replace("Ú","U")
+        if norm == "BIOLOGICO": mapeo_columnas[col] = "BIOLOGICO"
+        elif norm == "FECHA DE RECEPCION": mapeo_columnas[col] = "FECHA DE RECEPCIÓN"
+        elif norm == "FECHA DE CADUCIDAD": mapeo_columnas[col] = "FECHA DE CADUCIDAD"
+    if mapeo_columnas:
+        e = e.rename(columns=mapeo_columnas)
+
     e = e.dropna(subset=["BIOLOGICO"]).copy()
     e["BIOLOGICO"]          = e["BIOLOGICO"].astype(str).str.strip()
     e["FECHA DE RECEPCIÓN"] = pd.to_datetime(e["FECHA DE RECEPCIÓN"], errors="coerce")
